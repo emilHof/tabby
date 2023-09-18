@@ -29,7 +29,9 @@ fn main() {
             }
         };
 
-        let out = match Eval::eval(Node::Expression(Expression::Program(pro))) {
+        let mut runtime = Eval::new();
+
+        let out = match runtime.eval(Node::Expression(Expression::Program(pro))) {
             Ok(obj) => obj,
             Err(e) => {
                 println!("{:?}", e);

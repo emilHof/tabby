@@ -1,6 +1,8 @@
 use std::{
+    cell::UnsafeCell,
     collections::HashMap,
     fmt::{Debug, Display},
+    sync::Arc,
 };
 
 pub enum ObjectType {
@@ -10,19 +12,11 @@ pub enum ObjectType {
 }
 
 pub struct VTable {
-    inner: HashMap<&'static str, Box<dyn Fn(Option<Box<dyn Object>>) -> Option<Box<dyn Object>>>>,
-    pub inverte: Box<dyn Fn() -> Box<dyn Object>>,
-    pub negate: Box<dyn Fn() -> Box<dyn Object>>,
-    pub integer: Box<dyn Fn() -> i32>,
-    pub bool: Box<dyn Fn() -> bool>,
-    pub as_bytes: Box<dyn Fn() -> Box<[u8]>>,
+    inner: HashMap<&'static str, Arc<dyn Fn(Option<Reference>) -> Option<Reference>>>,
 }
 
 impl VTable {
-    pub fn get(
-        &self,
-        s: &str,
-    ) -> Option<&Box<dyn Fn(Option<Box<dyn Object>>) -> Option<Box<dyn Object>>>> {
+    pub fn get(&self, s: &str) -> Option<&Arc<dyn Fn(Option<Reference>) -> Option<Reference>>> {
         self.inner.get(s)
     }
 }
@@ -36,6 +30,35 @@ impl Debug for VTable {
 pub trait Object: Debug + Display {
     fn r#type(&self) -> ObjectType;
     fn v_table(&self) -> &VTable;
+}
+
+#[derive(Debug, Clone)]
+pub struct Reference {
+    inner: Arc<UnsafeCell<dyn Object>>,
+}
+
+impl Reference {
+    fn as_ref(&self) -> &dyn Object {
+        unsafe { &(*self.inner.get()) }
+    }
+
+    unsafe fn get_mut<T>(&self) -> &mut T {
+        &mut (*(self.inner.get() as *mut T))
+    }
+}
+
+impl std::ops::Deref for Reference {
+    type Target = dyn Object;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { &(*self.inner.get()) }
+    }
+}
+
+impl Display for Reference {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("{}", unsafe { &(*(*self.inner).get()) }))
+    }
 }
 
 #[derive(Debug)]
@@ -54,98 +77,118 @@ impl Object for Integer {
     }
 }
 
-fn erase(obj: Box<dyn Object>) -> Box<dyn Object> {
+fn erase(obj: Arc<UnsafeCell<dyn Object>>) -> Arc<UnsafeCell<dyn Object>> {
     obj
 }
 
 impl Integer {
-    pub fn erased(val: i32) -> Box<dyn Object> {
+    pub fn erased(val: i32) -> Reference {
         let mut v_table = VTable {
             inner: HashMap::new(),
-            inverte: Box::new(move || Integer::erased(val * -1)),
-            negate: Box::new(move || Integer::erased(val * -1)),
-            integer: Box::new(move || val),
-            bool: Box::new(move || val > 0),
-            as_bytes: Box::new(move || Box::new(val.to_le_bytes())),
+        };
+
+        let is_int = |obj: Option<Reference>| -> Option<i32> {
+            let Some(obj) = obj else {
+                return None;
+            };
+
+            if !matches!(obj.r#type(), ObjectType::Integer) {
+                return None;
+            }
+
+            let rhs = unsafe { obj.get_mut::<Integer>().val };
+
+            Some(rhs)
         };
 
         v_table.inner.insert(
             "sub_lhs",
-            Box::new(move |obj| {
-                let Some(obj) = obj else {
-                    return None;
-                };
-
-                if !matches!(obj.r#type(), ObjectType::Integer) {
-                    return None;
-                }
-
-                let bytes = (obj.v_table().as_bytes)();
-
-                let rhs = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-
+            Arc::new(move |obj| {
+                let rhs = is_int(obj)?;
                 Some(Integer::erased(val - rhs))
             }),
         );
 
         v_table.inner.insert(
             "add_lhs",
-            Box::new(move |obj| {
-                let Some(obj) = obj else {
-                    return None;
-                };
-
-                if !matches!(obj.r#type(), ObjectType::Integer) {
-                    return None;
-                }
-
-                let bytes = (obj.v_table().as_bytes)();
-
-                let rhs = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-
+            Arc::new(move |obj| {
+                let rhs = is_int(obj)?;
                 Some(Integer::erased(val + rhs))
             }),
         );
 
         v_table.inner.insert(
             "mul_lhs",
-            Box::new(move |obj| {
-                let Some(obj) = obj else {
-                    return None;
-                };
-
-                if !matches!(obj.r#type(), ObjectType::Integer) {
-                    return None;
-                }
-
-                let bytes = (obj.v_table().as_bytes)();
-
-                let rhs = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-
+            Arc::new(move |obj| {
+                let rhs = is_int(obj)?;
                 Some(Integer::erased(val * rhs))
             }),
         );
 
         v_table.inner.insert(
             "div_lhs",
-            Box::new(move |obj| {
-                let Some(obj) = obj else {
-                    return None;
-                };
-
-                if !matches!(obj.r#type(), ObjectType::Integer) {
-                    return None;
-                }
-
-                let bytes = (obj.v_table().as_bytes)();
-
-                let rhs = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-
+            Arc::new(move |obj| {
+                let rhs = is_int(obj)?;
                 Some(Integer::erased(val / rhs))
             }),
         );
 
-        erase(Box::new(Integer { val, v_table }))
+        v_table.inner.insert(
+            "eq_lhs",
+            Arc::new(move |obj| {
+                let rhs = is_int(obj)?;
+                Some(Bool::erased(val == rhs))
+            }),
+        );
+
+        v_table.inner.insert(
+            "neq_lhs",
+            Arc::new(move |obj| {
+                let rhs = is_int(obj)?;
+                Some(Bool::erased(val != rhs))
+            }),
+        );
+
+        v_table.inner.insert(
+            "le_lhs",
+            Arc::new(move |obj| {
+                let rhs = is_int(obj)?;
+                Some(Bool::erased(val < rhs))
+            }),
+        );
+
+        v_table.inner.insert(
+            "leq_lhs",
+            Arc::new(move |obj| {
+                let rhs = is_int(obj)?;
+                Some(Bool::erased(val <= rhs))
+            }),
+        );
+
+        v_table.inner.insert(
+            "ge_lhs",
+            Arc::new(move |obj| {
+                let rhs = is_int(obj)?;
+                Some(Bool::erased(val > rhs))
+            }),
+        );
+
+        v_table.inner.insert(
+            "geq_lhs",
+            Arc::new(move |obj| {
+                let rhs = is_int(obj)?;
+                Some(Bool::erased(val >= rhs))
+            }),
+        );
+
+        v_table.inner.insert(
+            "truthy",
+            Arc::new(move |_| if val > 0 { Some(Null::erased()) } else { None }),
+        );
+
+        Reference {
+            inner: erase(Arc::new(UnsafeCell::new(Integer { val, v_table }))),
+        }
     }
 }
 
@@ -172,16 +215,57 @@ impl Object for Bool {
 }
 
 impl Bool {
-    pub fn erased(val: bool) -> Box<dyn Object> {
-        let v_table = VTable {
+    pub fn erased(val: bool) -> Reference {
+        let mut v_table = VTable {
             inner: HashMap::new(),
-            inverte: Box::new(move || Bool::erased(!val)),
-            negate: Box::new(move || Bool::erased(!val)),
-            integer: Box::new(move || if val { 1 } else { 0 }),
-            bool: Box::new(move || val),
-            as_bytes: Box::new(move || Box::new([if val { 1 } else { 0 }])),
         };
-        erase(Box::new(Bool { val, v_table }))
+
+        let is_bool = |obj: Option<Reference>| -> Option<bool> {
+            let Some(obj) = obj else {
+                return None;
+            };
+
+            if !matches!(obj.r#type(), ObjectType::Bool) {
+                return None;
+            }
+
+            let rhs = unsafe { obj.get_mut::<Bool>().val };
+
+            Some(rhs)
+        };
+
+        v_table.inner.insert(
+            "eq_lhs",
+            Arc::new(move |obj| {
+                let rhs = is_bool(obj)?;
+                Some(Bool::erased(val == rhs))
+            }),
+        );
+
+        v_table.inner.insert(
+            "neq_lhs",
+            Arc::new(move |obj| {
+                let rhs = is_bool(obj)?;
+                Some(Bool::erased(val == rhs))
+            }),
+        );
+
+        v_table
+            .inner
+            .insert("neg", Arc::new(move |_| Some(Bool::erased(!val))));
+
+        v_table
+            .inner
+            .insert("inv", Arc::new(move |_| Some(Bool::erased(!val))));
+
+        v_table.inner.insert(
+            "truthy",
+            Arc::new(move |_| if val { Some(Null::erased()) } else { None }),
+        );
+
+        Reference {
+            inner: erase(Arc::new(UnsafeCell::new(Bool { val, v_table }))),
+        }
     }
 }
 
@@ -207,17 +291,16 @@ impl Object for Null {
 }
 
 impl Null {
-    pub fn erased() -> Box<dyn Object> {
-        let v_table = VTable {
+    pub fn erased() -> Reference {
+        let mut v_table = VTable {
             inner: HashMap::new(),
-            inverte: Box::new(|| Null::erased()),
-            negate: Box::new(|| Null::erased()),
-            integer: Box::new(|| 0),
-            bool: Box::new(|| false),
-            as_bytes: Box::new(move || Box::new([])),
         };
 
-        erase(Box::new(Null { v_table }))
+        v_table.inner.insert("truthy", Arc::new(move |_| None));
+
+        Reference {
+            inner: erase(Arc::new(UnsafeCell::new(Null { v_table }))),
+        }
     }
 }
 

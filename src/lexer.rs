@@ -62,8 +62,8 @@ impl Lexer {
             '=' => match self.c {
                 '!' => Token::Operator(Operator::NotEqual),
                 '=' => Token::Operator(Operator::Equal),
-                '<' => Token::Operator(Operator::GreaterOrEqual),
-                '>' => Token::Operator(Operator::LessOrEqual),
+                '>' => Token::Operator(Operator::GreaterOrEqual),
+                '<' => Token::Operator(Operator::LessOrEqual),
                 _ => return self.read_single_token(),
             },
             '&' if self.c == '&' => Token::Operator(Operator::And),

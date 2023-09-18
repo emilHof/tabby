@@ -1,13 +1,16 @@
 use crate::{
-    ast::{self, Expression, Literal, Node, Statement},
-    object::{self, Integer, Null, Object},
+    ast::{self, Expression, Ident, LetStatement, Literal, Node, ReturnStatement, Statement},
+    object::{self, Integer, Null, Reference},
+    stack::Stack,
     token::{Operator, Token},
 };
 
 use error::{Error, Result};
 
 pub mod error {
-    pub type Result<T> = std::result::Result<T, Error>;
+    use super::ops::Flow;
+
+    pub type Result<T> = std::result::Result<Flow<T>, Error>;
 
     #[derive(Debug, Clone)]
     pub enum Error {
@@ -15,44 +18,176 @@ pub mod error {
     }
 }
 
-pub struct Eval {}
+pub mod ops {
+    use std::fmt::{Display, Formatter, Result};
+
+    pub enum Flow<T> {
+        Continue(T),
+        Break(T),
+    }
+
+    impl<T> std::ops::Deref for Flow<T> {
+        type Target = T;
+
+        fn deref(&self) -> &Self::Target {
+            match self {
+                Self::Continue(ref t) => t,
+                Self::Break(ref t) => t,
+            }
+        }
+    }
+
+    impl<T> std::ops::DerefMut for Flow<T> {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            match self {
+                Self::Continue(ref mut t) => t,
+                Self::Break(ref mut t) => t,
+            }
+        }
+    }
+
+    impl<T: Display> Display for Flow<T> {
+        fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+            f.write_fmt(format_args!("{}", self.as_ref().unwrap()))
+        }
+    }
+
+    impl<T> Flow<T> {
+        pub fn unwrap(self) -> T {
+            match self {
+                Self::Continue(t) => t,
+                Self::Break(t) => t,
+            }
+        }
+
+        pub fn is_break(&self) -> bool {
+            matches!(self, Self::Break(_))
+        }
+
+        pub fn is_continue(&self) -> bool {
+            matches!(self, Self::Continue(_))
+        }
+
+        pub fn as_ref(&self) -> Flow<&T> {
+            match self {
+                Self::Continue(ref t) => Flow::Continue(t),
+                Self::Break(ref t) => Flow::Break(t),
+            }
+        }
+
+        pub fn map<F, U>(self, f: F) -> Flow<U>
+        where
+            F: Fn(T) -> U,
+        {
+            match self {
+                Self::Continue(t) => Flow::Continue(f(t)),
+                Self::Break(t) => Flow::Break(f(t)),
+            }
+        }
+    }
+}
+
+use ops::Flow;
+
+#[derive(Debug)]
+pub struct Eval {
+    stack: Stack,
+}
 
 impl Eval {
-    pub fn eval(node: Node) -> Result<Box<dyn Object>> {
+    pub fn new() -> Self {
+        Self {
+            stack: Stack::new(),
+        }
+    }
+    pub fn eval(&mut self, node: Node) -> Result<Reference> {
         let ret = match node {
-            Node::Statement(Statement::Expression(e)) => Eval::eval(Node::Expression(e))?,
-            Node::Expression(Expression::Literal(Literal::Int(val))) => Integer::erased(val),
+            Node::Statement(Statement::Expression(e)) => self.eval(Node::Expression(e))?,
+            Node::Expression(Expression::Literal(Literal::Int(val))) => {
+                Flow::Continue(Integer::erased(val))
+            }
             Node::Expression(Expression::Literal(Literal::Bool(b))) => match b {
-                ast::Bool::True => object::Bool::erased(true),
-                ast::Bool::False => object::Bool::erased(false),
+                ast::Bool::True => Flow::Continue(object::Bool::erased(true)),
+                ast::Bool::False => Flow::Continue(object::Bool::erased(false)),
             },
+            Node::Expression(Expression::Ident(Ident { name })) => {
+                let val = self
+                    .stack
+                    .get(&name)
+                    .map(|a| a.clone())
+                    .ok_or(Error::Eval(format!("Variabl {} not found in scope", name)))?;
+
+                Flow::Continue(val)
+            }
             Node::Expression(Expression::Prefix { operator, operand }) => {
-                Self::eval_prefix(operator, *operand)?
+                self.eval_prefix(operator, *operand)?
             }
             Node::Expression(Expression::Infix { operator, lhs, rhs }) => {
-                Self::eval_infix(operator, *lhs, *rhs)?
+                self.eval_infix(operator, *lhs, *rhs)?
             }
-            Node::Expression(Expression::Program(pro)) => Self::eval_statements(pro.statements)?,
+            Node::Expression(Expression::If {
+                condition,
+                consequence,
+                alternative,
+            }) => self.eval_if(*condition, *consequence, alternative.map(|b| *b))?,
+            Node::Expression(Expression::Block { statements }) => {
+                println!("before: {:?}", self.stack);
+                self.stack.push();
+                println!("pushed: {:?}", self.stack);
+                let ret = self.eval_statements(statements)?;
+                self.stack.pop();
+                println!("after: {:?}", self.stack);
+                ret
+            }
+            Node::Expression(Expression::Program(pro)) => self.eval_statements(pro.statements)?,
+            Node::Statement(Statement::Return(ReturnStatement { value })) => {
+                let ret = self.eval(Node::Expression(value))?;
+                Flow::Break(ret.unwrap())
+            }
+            Node::Statement(Statement::Let(LetStatement { name, value })) => {
+                self.eval_assign(Expression::Ident(name), value)?
+            }
             _ => todo!(),
         };
 
         Ok(ret)
     }
 
-    fn eval_statements(statements: Vec<Statement>) -> Result<Box<dyn Object>> {
-        statements
-            .into_iter()
-            .try_fold(Null::erased(), |_, st| Self::eval(Node::Statement(st)))
+    fn eval_statements(&mut self, statements: Vec<Statement>) -> Result<Reference> {
+        let mut ret = Flow::Continue(Null::erased());
+        for st in statements {
+            ret = match self.eval(Node::Statement(st))? {
+                f @ Flow::Continue(_) => f,
+                f @ Flow::Break(_) => {
+                    return Ok(f);
+                }
+            };
+        }
+
+        Ok(ret)
     }
 
-    fn eval_prefix(operator: Token, operand: Expression) -> Result<Box<dyn Object>> {
-        let mut operand = Self::eval(Node::Expression(operand))?;
+    fn eval_prefix(&mut self, operator: Token, operand: Expression) -> Result<Reference> {
+        let mut operand = self.eval(Node::Expression(operand))?;
+        if operand.is_break() {
+            return Ok(operand);
+        };
+
+        let err = Error::Eval(format!(
+            "Unsupported operator {:?} for operand type {}",
+            operator, operand
+        ));
+
         match operator {
             Token::Operator(Operator::Bang) => {
-                operand = (operand.v_table().inverte)();
+                operand = Flow::Continue(
+                    (operand.v_table().get("inv").ok_or(err.clone())?)(None).ok_or(err.clone())?,
+                );
             }
             Token::Operator(Operator::Minus) => {
-                operand = (operand.v_table().negate)();
+                operand = Flow::Continue(
+                    (operand.v_table().get("neg").ok_or(err.clone())?)(None).ok_or(err.clone())?,
+                );
             }
             _ => unsafe { core::hint::unreachable_unchecked() },
         }
@@ -60,22 +195,97 @@ impl Eval {
         Ok(operand)
     }
 
-    fn eval_infix(operator: Token, lhs: Expression, rhs: Expression) -> Result<Box<dyn Object>> {
-        let lhs = Self::eval(Node::Expression(lhs))?;
-        let rhs = Self::eval(Node::Expression(rhs))?;
-        let unsup_error = Error::Eval("Unsupported operator for operand types".into());
+    fn eval_assign(&mut self, lhs: Expression, rhs: Expression) -> Result<Reference> {
+        let ident = match lhs {
+            Expression::Ident(Ident { name }) => name,
+            _ => {
+                let lhs = self.eval(Node::Expression(lhs))?;
+                return Err(Error::Eval(format!(
+                    "Exprected identifier in assignment got {} instead",
+                    lhs
+                )));
+            }
+        };
+        let rhs = self.eval(Node::Expression(rhs))?;
+        if rhs.is_break() {
+            return Ok(Flow::Break(rhs.unwrap()));
+        };
+
+        self.stack
+            .assign(ident, rhs.as_ref().map(|t| t.clone()).unwrap());
+
+        Ok(rhs)
+    }
+
+    fn eval_infix(
+        &mut self,
+        operator: Token,
+        lhs: Expression,
+        rhs: Expression,
+    ) -> Result<Reference> {
+        if matches!(operator, Token::Operator(Operator::Assign)) {
+            return self.eval_assign(lhs, rhs);
+        }
+
+        let lhs = self.eval(Node::Expression(lhs))?;
+        if lhs.is_break() {
+            return Ok(lhs);
+        }
+        let rhs = self.eval(Node::Expression(rhs))?;
+        if rhs.is_break() {
+            return Ok(rhs);
+        }
+        let err = Error::Eval(format!(
+            "Unsupported operator {:?} for operand types {} and {}",
+            operator, lhs, rhs
+        ));
 
         let op = match operator {
             Token::Operator(Operator::Minus) => "sub_lhs",
             Token::Operator(Operator::Plus) => "add_lhs",
             Token::Operator(Operator::Multiply) => "mul_lhs",
             Token::Operator(Operator::Divide) => "div_lhs",
+            Token::Operator(Operator::Equal) => "eq_lhs",
+            Token::Operator(Operator::NotEqual) => "neq_lhs",
+            Token::Operator(Operator::Less) => "le_lhs",
+            Token::Operator(Operator::LessOrEqual) => "leq_lhs",
+            Token::Operator(Operator::Greater) => "ge_lhs",
+            Token::Operator(Operator::GreaterOrEqual) => "geq_lhs",
             _ => Err(Error::Eval("Infix operator is not supported".into()))?,
         };
 
-        let sub = lhs.v_table().get(op).ok_or(unsup_error.clone())?;
+        let sub = lhs.v_table().get(op).ok_or(err.clone())?;
 
-        sub(Some(rhs)).ok_or(unsup_error)
+        sub(Some(rhs.unwrap()))
+            .map(|op| Flow::Continue(op))
+            .ok_or(err)
+    }
+
+    fn eval_if(
+        &mut self,
+        condition: Expression,
+        consequence: Expression,
+        alternative: Option<Expression>,
+    ) -> Result<Reference> {
+        let cond = self.eval(Node::Expression(condition))?;
+        let err = Error::Eval(format!(
+            "Condition type of {} is not fit for conditions.",
+            cond
+        ));
+        if cond.is_break() {
+            return Ok(cond);
+        }
+        let cond_fn = cond.v_table().get("truthy").ok_or(err)?;
+
+        if cond_fn(None).is_some() {
+            return self.eval(Node::Expression(consequence));
+        }
+
+        if let Some(alt) = alternative {
+            return self.eval(Node::Expression(alt));
+        }
+
+        Ok(Flow::Continue(Null::erased()))
     }
 }
 
@@ -86,10 +296,11 @@ mod test {
     use super::*;
 
     #[test]
-    fn test_integer_lit() {
+    fn test_integer_comp() {
         let input = r#"
             5;
             10;
+            4 * (10 + 2);
             "#;
 
         let mut p = Parser::new(Lexer::new(input))
@@ -99,14 +310,20 @@ mod test {
             .statements
             .into_iter();
 
-        let mut e = Eval::eval(Node::Statement(p.next().unwrap()));
+        let mut r = Eval::new();
+
+        let mut e = r.eval(Node::Statement(p.next().unwrap()));
 
         unsafe {
             assert_eq!(format!("{}", e.unwrap_unchecked()), "5");
 
-            e = Eval::eval(Node::Statement(p.next().unwrap()));
+            e = r.eval(Node::Statement(p.next().unwrap()));
 
             assert_eq!(format!("{}", e.unwrap_unchecked()), "10");
+
+            e = r.eval(Node::Statement(p.next().unwrap()));
+
+            assert_eq!(format!("{}", e.unwrap_unchecked()), "48");
         }
 
         let p = Parser::new(Lexer::new(input))
@@ -114,10 +331,134 @@ mod test {
             .parse_program()
             .unwrap();
 
-        let e = Eval::eval(Node::Expression(Expression::Program(p)));
+        let e = r.eval(Node::Expression(Expression::Program(p)));
 
         unsafe {
-            assert_eq!(format!("{}", e.unwrap_unchecked()), "10");
+            assert_eq!(format!("{}", e.unwrap_unchecked()), "48");
+        }
+    }
+
+    #[test]
+    fn test_boolean_comp() {
+        let input = r#"
+            true == true;
+            4 < 10;
+            (5 >= 8) == true;
+            false == (3 > 20);
+            "#;
+
+        let mut p = Parser::new(Lexer::new(input))
+            .unwrap()
+            .parse_program()
+            .unwrap()
+            .statements
+            .into_iter();
+
+        let mut r = Eval::new();
+
+        let mut e = r.eval(Node::Statement(p.next().unwrap()));
+
+        unsafe {
+            assert_eq!(format!("{}", e.unwrap_unchecked()), "true");
+
+            e = r.eval(Node::Statement(p.next().unwrap()));
+
+            assert_eq!(format!("{}", e.unwrap_unchecked()), "true");
+
+            e = r.eval(Node::Statement(p.next().unwrap()));
+
+            assert_eq!(format!("{}", e.unwrap_unchecked()), "false");
+
+            e = r.eval(Node::Statement(p.next().unwrap()));
+
+            assert_eq!(format!("{}", e.unwrap_unchecked()), "true");
+        }
+
+        let p = Parser::new(Lexer::new(input))
+            .unwrap()
+            .parse_program()
+            .unwrap();
+
+        let e = r.eval(Node::Expression(Expression::Program(p)));
+
+        unsafe {
+            assert_eq!(format!("{}", e.unwrap_unchecked()), "true");
+        }
+    }
+
+    #[test]
+    fn test_if() {
+        let input = r#"
+            if 1 > 10 { 5 } else { 10 * 8 };
+            if 4 == 3 { 4 };
+            "#;
+
+        let mut p = Parser::new(Lexer::new(input))
+            .unwrap()
+            .parse_program()
+            .unwrap()
+            .statements
+            .into_iter();
+
+        let mut r = Eval::new();
+
+        let mut e = r.eval(Node::Statement(p.next().unwrap()));
+
+        unsafe {
+            assert_eq!(format!("{}", e.unwrap_unchecked()), "80");
+
+            e = r.eval(Node::Statement(p.next().unwrap()));
+
+            assert_eq!(format!("{}", e.unwrap_unchecked()), "null");
+        }
+
+        let p = Parser::new(Lexer::new(input))
+            .unwrap()
+            .parse_program()
+            .unwrap();
+
+        let e = r.eval(Node::Expression(Expression::Program(p)));
+
+        unsafe {
+            assert_eq!(format!("{}", e.unwrap_unchecked()), "null");
+        }
+    }
+
+    #[test]
+    fn test_let() {
+        let input = r#"
+            let a = 4;
+            a;
+            "#;
+
+        let mut p = Parser::new(Lexer::new(input))
+            .unwrap()
+            .parse_program()
+            .unwrap()
+            .statements
+            .into_iter();
+
+        let mut r = Eval::new();
+
+        let mut e = r.eval(Node::Statement(p.next().unwrap()));
+
+        unsafe {
+            assert_eq!(format!("{}", e.unwrap_unchecked()), "80");
+
+            e = r.eval(Node::Statement(p.next().unwrap()));
+
+            assert_eq!(format!("{}", e.unwrap_unchecked()), "4");
+        }
+
+        let p = Parser::new(Lexer::new(input))
+            .unwrap()
+            .parse_program()
+            .unwrap();
+
+        let e = r.eval(Node::Expression(Expression::Program(p)));
+
+        unsafe {
+            assert_eq!(format!("{}", e.unwrap_unchecked()), "4");
         }
     }
 }
