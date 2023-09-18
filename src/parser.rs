@@ -13,7 +13,7 @@ pub struct Parser {
 }
 
 impl Parser {
-    fn new(mut lexer: Lexer) -> Result<Self> {
+    pub fn new(mut lexer: Lexer) -> Result<Self> {
         Ok(Self {
             cur: lexer.next_token()?,
             peek: lexer.next_token()?,
@@ -110,6 +110,7 @@ impl Parser {
             Token::Keyword(Keyword::If) => self.parse_if()?,
             Token::Keyword(Keyword::True | Keyword::False) => self.parse_bool()?,
             Token::Keyword(Keyword::Function) => self.parse_function()?,
+            Token::Operator(Operator::Bang | Operator::Minus) => self.parse_prefix()?,
             Token::Semicolon
             | Token::Operator(_)
             | Token::Keyword(_)
@@ -155,6 +156,14 @@ impl Parser {
         }
 
         return Ok(lhs);
+    }
+
+    fn parse_prefix(&mut self) -> Result<Expression> {
+        let operator = self.cur.clone();
+        self.next_token()?;
+        let operand = Box::new(self.parse_expression(Precedence::Prefix)?);
+
+        Ok(Expression::Prefix { operator, operand })
     }
 
     fn parse_invoke(&mut self, lhs: Expression) -> Result<Expression> {
@@ -419,6 +428,7 @@ mod test {
         50;
         let x = 0;
         let y = 1 + 2;
+        let yes = !false;
         x = 3;
         let a = b = c = false;
         x = 1 * (2 + 3);
@@ -456,6 +466,13 @@ mod test {
                     operator: Token::Operator(Operator::Plus),
                     lhs: Box::new(Expression::Literal(Literal::Int(1))),
                     rhs: Box::new(Expression::Literal(Literal::Int(2))),
+                },
+            }),
+            Statement::Let(LetStatement {
+                name: Ident { name: "yes".into() },
+                value: Expression::Prefix {
+                    operator: Token::Operator(Operator::Bang),
+                    operand: Box::new(Expression::Literal(Literal::Bool(Bool::False))),
                 },
             }),
             Statement::Expression(Expression::Infix {

@@ -10,7 +10,6 @@ pub enum Node {
 #[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq)]
 pub enum Statement {
-    Program(Program),
     Let(LetStatement),
     Return(ReturnStatement),
     Expression(Expression),
@@ -40,12 +39,17 @@ pub struct ReturnStatement {
 #[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq)]
 pub enum Expression {
+    Program(Program),
     Ident(Ident),
     Literal(Literal),
     Infix {
         operator: Token,
         lhs: Box<Expression>,
         rhs: Box<Expression>,
+    },
+    Prefix {
+        operator: Token,
+        operand: Box<Expression>,
     },
     Block {
         statements: Vec<Statement>,
