@@ -1,6 +1,6 @@
 use crate::{
     ast::{self, Expression, Ident, LetStatement, Literal, Node, ReturnStatement, Statement},
-    object::{self, Integer, Null, Reference},
+    object::{self, Function, Integer, Null, ObjectType, Reference},
     stack::Stack,
     token::{Operator, Token},
 };
@@ -100,6 +100,11 @@ impl Eval {
             stack: Stack::new(),
         }
     }
+
+    pub fn clear(&mut self) {
+        self.stack = Stack::new();
+    }
+
     pub fn eval(&mut self, node: Node) -> Result<Reference> {
         let ret = match node {
             Node::Statement(Statement::Expression(e)) => self.eval(Node::Expression(e))?,
@@ -131,12 +136,9 @@ impl Eval {
                 alternative,
             }) => self.eval_if(*condition, *consequence, alternative.map(|b| *b))?,
             Node::Expression(Expression::Block { statements }) => {
-                println!("before: {:?}", self.stack);
                 self.stack.push();
-                println!("pushed: {:?}", self.stack);
                 let ret = self.eval_statements(statements)?;
                 self.stack.pop();
-                println!("after: {:?}", self.stack);
                 ret
             }
             Node::Expression(Expression::Program(pro)) => self.eval_statements(pro.statements)?,
@@ -147,10 +149,74 @@ impl Eval {
             Node::Statement(Statement::Let(LetStatement { name, value })) => {
                 self.eval_assign(Expression::Ident(name), value)?
             }
+            Node::Expression(Expression::Invoked { invoked, args }) => {
+                self.eval_invoke(*invoked, args)?
+            }
+            Node::Expression(Expression::Literal(Literal::Function { parameters, body })) => {
+                Flow::Continue(Function::erased(parameters, body))
+            }
             _ => todo!(),
         };
 
         Ok(ret)
+    }
+
+    fn eval_invoke(&mut self, invoked: Expression, args: Vec<Expression>) -> Result<Reference> {
+        let function = match invoked {
+            f @ Expression::Literal(Literal::Function { .. }) => {
+                self.eval(Node::Expression(f))?.unwrap()
+            }
+            Expression::Ident(Ident { name }) => {
+                let f = self.stack.get(&name).ok_or(Error::Eval(format!(
+                    "Cannot find {} in the current scope.",
+                    name
+                )))?;
+
+                f
+            }
+            _ => {
+                return Err(Error::Eval(format!(
+                    "Inovking non-function types is not supported."
+                )))
+            }
+        };
+
+        if !matches!(function.r#type(), ObjectType::Function) {
+            return Err(Error::Eval(format!(
+                "Inovking non-function types is not supported",
+            )));
+        }
+
+        let function = unsafe { function.get_mut::<Function>() };
+
+        if function.parameters.len() != args.len() {
+            return Err(Error::Eval(format!(
+                "Incorrect number of arguments passed for invocation",
+            )));
+        }
+
+        let args: Vec<Reference> =
+            args.into_iter().try_fold(vec![], |mut args, arg| {
+                match self.eval(Node::Expression(arg)) {
+                    Err(e) => Err(e),
+                    Ok(arg) => {
+                        args.push(arg.unwrap());
+                        Ok(args)
+                    }
+                }
+            })?;
+
+        self.stack.push_frame();
+
+        for (ident, arg) in function.parameters.iter().zip(args.into_iter()) {
+            self.stack.add(ident.name.clone(), arg);
+        }
+
+        let ret = self.eval(Node::Expression(*function.body.clone()));
+
+        self.stack.pop_frame();
+
+        ret
     }
 
     fn eval_statements(&mut self, statements: Vec<Statement>) -> Result<Reference> {
@@ -331,6 +397,8 @@ mod test {
             .parse_program()
             .unwrap();
 
+        r.clear();
+
         let e = r.eval(Node::Expression(Expression::Program(p)));
 
         unsafe {
@@ -379,6 +447,8 @@ mod test {
             .parse_program()
             .unwrap();
 
+        r.clear();
+
         let e = r.eval(Node::Expression(Expression::Program(p)));
 
         unsafe {
@@ -417,6 +487,8 @@ mod test {
             .parse_program()
             .unwrap();
 
+        r.clear();
+
         let e = r.eval(Node::Expression(Expression::Program(p)));
 
         unsafe {
@@ -454,6 +526,8 @@ mod test {
             .unwrap()
             .parse_program()
             .unwrap();
+
+        r.clear();
 
         let e = r.eval(Node::Expression(Expression::Program(p)));
 

@@ -6,6 +6,8 @@ use monkey::{
 };
 
 fn main() {
+    let mut runtime = Eval::new();
+
     loop {
         print!(">> ");
         std::io::stdout().flush().unwrap();
@@ -28,8 +30,6 @@ fn main() {
                 return;
             }
         };
-
-        let mut runtime = Eval::new();
 
         let out = match runtime.eval(Node::Expression(Expression::Program(pro))) {
             Ok(obj) => obj,

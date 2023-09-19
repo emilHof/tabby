@@ -5,7 +5,10 @@ use std::{
     sync::Arc,
 };
 
+use crate::ast::{Expression, Ident};
+
 pub enum ObjectType {
+    Function,
     Integer,
     Bool,
     Null,
@@ -42,7 +45,7 @@ impl Reference {
         unsafe { &(*self.inner.get()) }
     }
 
-    unsafe fn get_mut<T>(&self) -> &mut T {
+    pub unsafe fn get_mut<T>(&self) -> &mut T {
         &mut (*(self.inner.get() as *mut T))
     }
 }
@@ -307,5 +310,46 @@ impl Null {
 impl Display for Null {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("null")
+    }
+}
+
+#[derive(Debug)]
+pub struct Function {
+    v_table: VTable,
+    pub parameters: Vec<Ident>,
+    pub body: Box<Expression>,
+}
+
+impl Object for Function {
+    fn r#type(&self) -> ObjectType {
+        ObjectType::Function
+    }
+
+    fn v_table(&self) -> &VTable {
+        &self.v_table
+    }
+}
+
+impl Function {
+    pub fn erased(parameters: Vec<Ident>, body: Box<Expression>) -> Reference {
+        let mut v_table = VTable {
+            inner: HashMap::new(),
+        };
+
+        v_table.inner.insert("truthy", Arc::new(move |_| None));
+
+        Reference {
+            inner: erase(Arc::new(UnsafeCell::new(Function {
+                v_table,
+                parameters,
+                body,
+            }))),
+        }
+    }
+}
+
+impl Display for Function {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Function")
     }
 }
