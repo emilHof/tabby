@@ -102,11 +102,13 @@ impl Parser {
     }
 
     fn parse_expression(&mut self, precedence: Precedence) -> Result<Expression> {
+        println!("{:?}", self.cur);
         let mut lhs = match self.cur {
             Token::LParen => self.parse_grouped()?,
             Token::LBrace => self.parse_block()?,
             Token::Ident(_) => self.parse_ident()?,
             Token::Int(_) => self.parse_int()?,
+            Token::Str(_) => self.parse_str()?,
             Token::Keyword(Keyword::If) => self.parse_if()?,
             Token::Keyword(Keyword::True | Keyword::False) => self.parse_bool()?,
             Token::Keyword(Keyword::Function) => self.parse_function()?,
@@ -121,11 +123,15 @@ impl Parser {
             | Token::Illegal => todo!(),
         };
 
+        println!("{:?}", self.peek);
+
         while !matches!(self.peek, Token::Semicolon) && precedence < self.peek_precedence() {
             lhs = match self.peek {
                 Token::Operator(Operator::Assign)
                 | Token::Operator(Operator::Plus)
+                | Token::Operator(Operator::PlusEqual)
                 | Token::Operator(Operator::Minus)
+                | Token::Operator(Operator::MinusEqual)
                 | Token::Operator(Operator::Divide)
                 | Token::Operator(Operator::Multiply)
                 | Token::Operator(Operator::Equal)
@@ -142,6 +148,7 @@ impl Parser {
                     self.parse_invoke(lhs)?
                 }
                 Token::Semicolon
+                | Token::Str(_)
                 | Token::Operator(_)
                 | Token::Keyword(_)
                 | Token::EOF
@@ -300,6 +307,15 @@ impl Parser {
         Ok(int)
     }
 
+    fn parse_str(&mut self) -> Result<Expression> {
+        let Token::Str(value) = &self.cur else {
+            unsafe { core::hint::unreachable_unchecked() }
+        };
+
+        let int = Expression::Literal(Literal::String(value.clone()));
+        Ok(int)
+    }
+
     fn parse_ident(&mut self) -> Result<Expression> {
         let Token::Ident(name) = &self.cur else {
             unsafe { core::hint::unreachable_unchecked() }
@@ -352,7 +368,9 @@ impl Parser {
                 Precedence::Product
             }
             Token::Operator(Operator::Plus) | Token::Operator(Operator::Minus) => Precedence::Sum,
-            Token::Operator(Operator::Assign) => Precedence::Assign,
+            Token::Operator(Operator::Assign)
+            | Token::Operator(Operator::PlusEqual)
+            | Token::Operator(Operator::MinusEqual) => Precedence::Assign,
             Token::Operator(Operator::Equal) | Token::Operator(Operator::NotEqual) => {
                 Precedence::Equals
             }
@@ -366,6 +384,7 @@ impl Parser {
             | Token::EOF
             | Token::Ident(_)
             | Token::Int(_)
+            | Token::Str(_)
             | Token::Comman
             | Token::LBrace
             | Token::RParen

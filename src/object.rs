@@ -10,6 +10,7 @@ use crate::ast::{Expression, Ident};
 pub enum ObjectType {
     Function,
     Integer,
+    Str,
     Bool,
     Null,
 }
@@ -351,5 +352,72 @@ impl Function {
 impl Display for Function {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Function")
+    }
+}
+
+#[derive(Debug)]
+pub struct Str {
+    v_table: VTable,
+    pub str: Arc<str>,
+}
+
+impl Object for Str {
+    fn r#type(&self) -> ObjectType {
+        ObjectType::Str
+    }
+
+    fn v_table(&self) -> &VTable {
+        &self.v_table
+    }
+}
+
+impl Str {
+    pub fn erased(str: String) -> Reference {
+        let mut v_table = VTable {
+            inner: HashMap::new(),
+        };
+
+        let str: Arc<str> = Arc::from(str.as_str());
+
+        let is_str = |obj: Option<Reference>| -> Option<Arc<str>> {
+            let Some(obj) = obj else {
+                return None;
+            };
+
+            if !matches!(obj.r#type(), ObjectType::Str) {
+                return None;
+            }
+
+            let rhs = unsafe { obj.get_mut::<Str>().str.clone() };
+
+            Some(rhs)
+        };
+        {
+            let str = str.clone();
+            v_table.inner.insert(
+                "truthy",
+                Arc::new(move |_| Some(Bool::erased(str.len() > 0))),
+            );
+        }
+        {
+            let str = str.clone();
+            v_table.inner.insert(
+                "add_lhs",
+                Arc::new(move |rhs| {
+                    let rhs = is_str(rhs)?;
+                    Some(Str::erased(format!("{}{}", str, rhs)))
+                }),
+            );
+        }
+
+        Reference {
+            inner: erase(Arc::new(UnsafeCell::new(Str { v_table, str }))),
+        }
+    }
+}
+
+impl Display for Str {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("{}", self.str))
     }
 }

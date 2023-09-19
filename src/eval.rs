@@ -1,6 +1,6 @@
 use crate::{
     ast::{self, Expression, Ident, LetStatement, Literal, Node, ReturnStatement, Statement},
-    object::{self, Function, Integer, Null, ObjectType, Reference},
+    object::{self, Function, Integer, Null, ObjectType, Reference, Str},
     stack::Stack,
     token::{Operator, Token},
 };
@@ -115,12 +115,15 @@ impl Eval {
                 ast::Bool::True => Flow::Continue(object::Bool::erased(true)),
                 ast::Bool::False => Flow::Continue(object::Bool::erased(false)),
             },
+            Node::Expression(Expression::Literal(Literal::String(str))) => {
+                Flow::Continue(Str::erased(str))
+            }
             Node::Expression(Expression::Ident(Ident { name })) => {
                 let val = self
                     .stack
                     .get(&name)
                     .map(|a| a.clone())
-                    .ok_or(Error::Eval(format!("Variabl {} not found in scope", name)))?;
+                    .ok_or(Error::Eval(format!("Variable {} not found in scope", name)))?;
 
                 Flow::Continue(val)
             }
@@ -146,9 +149,11 @@ impl Eval {
                 let ret = self.eval(Node::Expression(value))?;
                 Flow::Break(ret.unwrap())
             }
-            Node::Statement(Statement::Let(LetStatement { name, value })) => {
-                self.eval_assign(Expression::Ident(name), value)?
-            }
+            Node::Statement(Statement::Let(LetStatement { name, value })) => self.eval_assign(
+                Token::Operator(Operator::Assign),
+                Expression::Ident(name),
+                value,
+            )?,
             Node::Expression(Expression::Invoked { invoked, args }) => {
                 self.eval_invoke(*invoked, args)?
             }
@@ -261,7 +266,12 @@ impl Eval {
         Ok(operand)
     }
 
-    fn eval_assign(&mut self, lhs: Expression, rhs: Expression) -> Result<Reference> {
+    fn eval_assign(
+        &mut self,
+        operator: Token,
+        lhs: Expression,
+        rhs: Expression,
+    ) -> Result<Reference> {
         let ident = match lhs {
             Expression::Ident(Ident { name }) => name,
             _ => {
@@ -277,6 +287,33 @@ impl Eval {
             return Ok(Flow::Break(rhs.unwrap()));
         };
 
+        let err = Error::Eval(format!(
+            "Unsupported operator {:?} for operand types {} and {}",
+            operator, ident, rhs
+        ));
+
+        let rhs = match operator {
+            Token::Operator(op @ Operator::MinusEqual | op @ Operator::PlusEqual) => {
+                let op = match op {
+                    Operator::PlusEqual => "add_lhs",
+                    Operator::MinusEqual => "sub_lhs",
+                    _ => unsafe { core::hint::unreachable_unchecked() },
+                };
+
+                let lhs = self.stack.get(&ident).ok_or(Error::Eval(format!(
+                    "Identifier {} not found in scope",
+                    ident
+                )))?;
+
+                let op = lhs.v_table().get(op).ok_or(err.clone())?;
+
+                op(Some(rhs.unwrap()))
+                    .map(|op| Flow::Continue(op))
+                    .ok_or(err)?
+            }
+            _ => rhs,
+        };
+
         self.stack
             .assign(ident, rhs.as_ref().map(|t| t.clone()).unwrap());
 
@@ -289,8 +326,13 @@ impl Eval {
         lhs: Expression,
         rhs: Expression,
     ) -> Result<Reference> {
-        if matches!(operator, Token::Operator(Operator::Assign)) {
-            return self.eval_assign(lhs, rhs);
+        if matches!(
+            operator,
+            Token::Operator(Operator::Assign)
+                | Token::Operator(Operator::PlusEqual)
+                | Token::Operator(Operator::MinusEqual)
+        ) {
+            return self.eval_assign(operator, lhs, rhs);
         }
 
         let lhs = self.eval(Node::Expression(lhs))?;
@@ -308,7 +350,9 @@ impl Eval {
 
         let op = match operator {
             Token::Operator(Operator::Minus) => "sub_lhs",
+            Token::Operator(Operator::MinusEqual) => "sub_lhs",
             Token::Operator(Operator::Plus) => "add_lhs",
+            Token::Operator(Operator::PlusEqual) => "add_lhs",
             Token::Operator(Operator::Multiply) => "mul_lhs",
             Token::Operator(Operator::Divide) => "div_lhs",
             Token::Operator(Operator::Equal) => "eq_lhs",
@@ -515,7 +559,7 @@ mod test {
         let mut e = r.eval(Node::Statement(p.next().unwrap()));
 
         unsafe {
-            assert_eq!(format!("{}", e.unwrap_unchecked()), "80");
+            assert_eq!(format!("{}", e.unwrap_unchecked()), "4");
 
             e = r.eval(Node::Statement(p.next().unwrap()));
 

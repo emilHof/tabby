@@ -64,6 +64,8 @@ impl Lexer {
                 '=' => Token::Operator(Operator::Equal),
                 '>' => Token::Operator(Operator::GreaterOrEqual),
                 '<' => Token::Operator(Operator::LessOrEqual),
+                '+' => Token::Operator(Operator::PlusEqual),
+                '-' => Token::Operator(Operator::MinusEqual),
                 _ => return self.read_single_token(),
             },
             '&' if self.c == '&' => Token::Operator(Operator::And),
@@ -80,10 +82,9 @@ impl Lexer {
         self.skip_whitespace();
 
         let token = match self.c {
-            '=' | '!' | '&' | '|' | '<' | '>' => self.read_double_token(),
-            '+' | '-' | '/' | '*' | '.' | '?' | '{' | '}' | '(' | ')' | ';' | ',' => {
-                self.read_single_token()
-            }
+            '=' | '!' | '-' | '+' | '&' | '|' | '<' | '>' => self.read_double_token(),
+            '/' | '*' | '.' | '?' | '{' | '}' | '(' | ')' | ';' | ',' => self.read_single_token(),
+            '"' => return Ok(Token::Str(self.read_string())),
             '\0' => Token::EOF,
             // Parse idents and keywords.
             // Needs an early return as `read_ident` calls `read_char`.
@@ -107,6 +108,21 @@ impl Lexer {
         self.read_char();
 
         Ok(token)
+    }
+
+    fn read_string(&mut self) -> String {
+        self.read_char();
+        let start_position = self.position;
+
+        while self.c != '"' && self.c != '\0' {
+            self.read_char();
+        }
+
+        let ret = self.input[start_position..self.position].iter().collect();
+
+        self.read_char();
+
+        ret
     }
 
     fn is_whitespace(&self) -> bool {
@@ -198,6 +214,8 @@ mod test {
             return true;
         }
         !-/*5;
+        let a = "hello there";
+        a -= "2";
         "#;
 
         let tests = vec![
@@ -265,6 +283,15 @@ mod test {
             Token::Operator(Operator::Divide),
             Token::Operator(Operator::Multiply),
             Token::Int(5),
+            Token::Semicolon,
+            Token::Keyword(Keyword::Let),
+            Token::Ident("a".into()),
+            Token::Operator(Operator::Assign),
+            Token::Str("hello there".into()),
+            Token::Semicolon,
+            Token::Ident("a".into()),
+            Token::Operator(Operator::MinusEqual),
+            Token::Str("2".into()),
             Token::Semicolon,
             Token::EOF,
         ];
