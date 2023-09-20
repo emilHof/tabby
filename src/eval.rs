@@ -1,6 +1,8 @@
+use std::{collections::HashMap, mem};
+
 use crate::{
     ast::{self, Expression, Ident, LetStatement, Literal, Node, ReturnStatement, Statement},
-    object::{self, Function, Integer, Null, ObjectType, Reference, Str},
+    object::{self, Builtin, Collection, Function, Integer, ObjectType, Reference, Str, Unit},
     stack::Stack,
     token::{Operator, Token},
 };
@@ -160,6 +162,18 @@ impl Eval {
             Node::Expression(Expression::Literal(Literal::Function { parameters, body })) => {
                 Flow::Continue(Function::erased(parameters, body))
             }
+            Node::Expression(Expression::Literal(Literal::Collection { members })) => {
+                Flow::Continue(Collection::erased(members.into_iter().try_fold(
+                    HashMap::new(),
+                    |mut members, (ident, exp)| match self.eval(Node::Expression(exp)) {
+                        Ok(member) => {
+                            members.insert(ident, member.clone());
+                            Ok(members)
+                        }
+                        Err(e) => Err(e),
+                    },
+                )?))
+            }
             _ => todo!(),
         };
 
@@ -167,24 +181,23 @@ impl Eval {
     }
 
     fn eval_invoke(&mut self, invoked: Expression, args: Vec<Expression>) -> Result<Reference> {
-        let function = match invoked {
-            f @ Expression::Literal(Literal::Function { .. }) => {
-                self.eval(Node::Expression(f))?.unwrap()
-            }
-            Expression::Ident(Ident { name }) => {
-                let f = self.stack.get(&name).ok_or(Error::Eval(format!(
-                    "Cannot find {} in the current scope.",
-                    name
-                )))?;
+        let function = self.eval(Node::Expression(invoked))?.unwrap();
 
-                f
-            }
-            _ => {
-                return Err(Error::Eval(format!(
-                    "Inovking non-function types is not supported."
-                )))
-            }
-        };
+        let args: Vec<Reference> =
+            args.into_iter().try_fold(vec![], |mut args, arg| {
+                match self.eval(Node::Expression(arg)) {
+                    Err(e) => Err(e),
+                    Ok(arg) => {
+                        args.push(arg.unwrap());
+                        Ok(args)
+                    }
+                }
+            })?;
+
+        if matches!(function.r#type(), ObjectType::Builtin) {
+            let builtin = unsafe { function.get_mut::<Builtin>() };
+            return builtin.call(args);
+        }
 
         if !matches!(function.r#type(), ObjectType::Function) {
             return Err(Error::Eval(format!(
@@ -200,17 +213,6 @@ impl Eval {
             )));
         }
 
-        let args: Vec<Reference> =
-            args.into_iter().try_fold(vec![], |mut args, arg| {
-                match self.eval(Node::Expression(arg)) {
-                    Err(e) => Err(e),
-                    Ok(arg) => {
-                        args.push(arg.unwrap());
-                        Ok(args)
-                    }
-                }
-            })?;
-
         self.stack.push_frame();
 
         for (ident, arg) in function.parameters.iter().zip(args.into_iter()) {
@@ -225,7 +227,7 @@ impl Eval {
     }
 
     fn eval_statements(&mut self, statements: Vec<Statement>) -> Result<Reference> {
-        let mut ret = Flow::Continue(Null::erased());
+        let mut ret = Flow::Continue(Unit::erased());
         for st in statements {
             ret = match self.eval(Node::Statement(st))? {
                 f @ Flow::Continue(_) => f,
@@ -264,6 +266,59 @@ impl Eval {
         }
 
         Ok(operand)
+    }
+
+    fn eval_access(
+        &mut self,
+        operator: Token,
+        lhs: Expression,
+        rhs: Expression,
+    ) -> Result<Reference> {
+        let collection = match lhs {
+            c @ Expression::Literal(Literal::Collection { .. }) => {
+                self.eval(Node::Expression(c))?.unwrap()
+            }
+            Expression::Ident(Ident { name }) => {
+                let c = self.stack.get(&name).ok_or(Error::Eval(format!(
+                    "Cannot find {} in the current scope.",
+                    name
+                )))?;
+
+                c
+            }
+            _ => {
+                return Err(Error::Eval(format!(
+                    "Accessing non-collection types is not supported."
+                )))
+            }
+        };
+
+        if !matches!(collection.r#type(), ObjectType::Collection) {
+            return Err(Error::Eval(format!(
+                "Accessing non-collection types is not supported",
+            )));
+        }
+
+        let members = unsafe { collection.get_mut::<Collection>().members.clone() };
+
+        let ident = match rhs {
+            Expression::Ident(i) => i,
+            _ => {
+                let rhs = self.eval(Node::Expression(rhs))?;
+                return Err(Error::Eval(format!(
+                    "Exprected identifier as accessor {} instead",
+                    rhs
+                )));
+            }
+        };
+
+        members
+            .get(&ident)
+            .map(|mem| Flow::Continue(mem.clone()))
+            .ok_or(Error::Eval(format!(
+                "Collection does not contain the member {}.",
+                ident.name
+            )))
     }
 
     fn eval_assign(
@@ -335,6 +390,10 @@ impl Eval {
             return self.eval_assign(operator, lhs, rhs);
         }
 
+        if matches!(operator, Token::Operator(Operator::Dot)) {
+            return self.eval_access(operator, lhs, rhs);
+        }
+
         let lhs = self.eval(Node::Expression(lhs))?;
         if lhs.is_break() {
             return Ok(lhs);
@@ -361,6 +420,8 @@ impl Eval {
             Token::Operator(Operator::LessOrEqual) => "leq_lhs",
             Token::Operator(Operator::Greater) => "ge_lhs",
             Token::Operator(Operator::GreaterOrEqual) => "geq_lhs",
+            Token::Operator(Operator::Ampersand) => "ins_lhs",
+            Token::Operator(Operator::Pipe) => "uni_lhs",
             _ => Err(Error::Eval("Infix operator is not supported".into()))?,
         };
 
@@ -395,7 +456,7 @@ impl Eval {
             return self.eval(Node::Expression(alt));
         }
 
-        Ok(Flow::Continue(Null::erased()))
+        Ok(Flow::Continue(Unit::erased()))
     }
 }
 

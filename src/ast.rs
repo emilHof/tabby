@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::{error::Error, token::Token};
 
 #[allow(dead_code)]
@@ -66,7 +68,7 @@ pub enum Expression {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Ident {
     pub name: String,
 }
@@ -80,6 +82,9 @@ pub enum Literal {
     Function {
         parameters: Vec<Ident>,
         body: Box<Expression>,
+    },
+    Collection {
+        members: HashMap<Ident, Expression>,
     },
 }
 

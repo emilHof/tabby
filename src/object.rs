@@ -7,12 +7,16 @@ use std::{
 
 use crate::ast::{Expression, Ident};
 
+use crate::eval::error::Result;
+
 pub enum ObjectType {
+    Bool,
+    Builtin,
+    Collection,
     Function,
     Integer,
     Str,
-    Bool,
-    Null,
+    Unit,
 }
 
 pub struct VTable {
@@ -187,7 +191,7 @@ impl Integer {
 
         v_table.inner.insert(
             "truthy",
-            Arc::new(move |_| if val > 0 { Some(Null::erased()) } else { None }),
+            Arc::new(move |_| if val > 0 { Some(Unit::erased()) } else { None }),
         );
 
         Reference {
@@ -264,7 +268,7 @@ impl Bool {
 
         v_table.inner.insert(
             "truthy",
-            Arc::new(move |_| if val { Some(Null::erased()) } else { None }),
+            Arc::new(move |_| if val { Some(Unit::erased()) } else { None }),
         );
 
         Reference {
@@ -280,13 +284,13 @@ impl Display for Bool {
 }
 
 #[derive(Debug)]
-pub struct Null {
+pub struct Unit {
     v_table: VTable,
 }
 
-impl Object for Null {
+impl Object for Unit {
     fn r#type(&self) -> ObjectType {
-        ObjectType::Null
+        ObjectType::Unit
     }
 
     fn v_table(&self) -> &VTable {
@@ -294,7 +298,7 @@ impl Object for Null {
     }
 }
 
-impl Null {
+impl Unit {
     pub fn erased() -> Reference {
         let mut v_table = VTable {
             inner: HashMap::new(),
@@ -303,14 +307,14 @@ impl Null {
         v_table.inner.insert("truthy", Arc::new(move |_| None));
 
         Reference {
-            inner: erase(Arc::new(UnsafeCell::new(Null { v_table }))),
+            inner: erase(Arc::new(UnsafeCell::new(Unit { v_table }))),
         }
     }
 }
 
-impl Display for Null {
+impl Display for Unit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("null")
+        f.write_str("()")
     }
 }
 
@@ -352,6 +356,147 @@ impl Function {
 impl Display for Function {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Function")
+    }
+}
+
+#[derive(Debug)]
+pub struct Collection {
+    v_table: VTable,
+    pub members: Arc<HashMap<Ident, Reference>>,
+}
+
+impl Object for Collection {
+    fn r#type(&self) -> ObjectType {
+        ObjectType::Collection
+    }
+
+    fn v_table(&self) -> &VTable {
+        &self.v_table
+    }
+}
+
+impl Collection {
+    pub fn erased(members: HashMap<Ident, Reference>) -> Reference {
+        let members = Arc::new(members);
+        let mut v_table = VTable {
+            inner: HashMap::new(),
+        };
+
+        let is_collection = |obj: Option<Reference>| {
+            let Some(obj) = obj else {
+                return None;
+            };
+
+            if !matches!(obj.r#type(), ObjectType::Collection) {
+                return None;
+            }
+
+            let rhs = unsafe { obj.get_mut::<Collection>().members.clone() };
+
+            Some(rhs)
+        };
+
+        v_table.inner.insert("truthy", Arc::new(move |_| None));
+        {
+            let members = members.clone();
+            v_table.inner.insert(
+                "uni_lhs",
+                Arc::new(move |obj| {
+                    let rhs = is_collection(obj)?;
+                    let mut union = HashMap::new();
+
+                    for (ident, member) in rhs.iter() {
+                        union.insert(ident.clone(), member.clone());
+                    }
+
+                    for (ident, member) in members.iter() {
+                        union.insert(ident.clone(), member.clone());
+                    }
+
+                    Some(Collection::erased(union))
+                }),
+            );
+        }
+        {
+            let members = members.clone();
+            v_table.inner.insert(
+                "ins_lhs",
+                Arc::new(move |obj| {
+                    let rhs = is_collection(obj)?;
+                    let mut intersection = HashMap::new();
+
+                    for (ident, member) in members.iter() {
+                        if rhs.contains_key(&ident) {
+                            intersection.insert(ident.clone(), member.clone());
+                        }
+                    }
+
+                    Some(Collection::erased(intersection))
+                }),
+            );
+        }
+
+        Reference {
+            inner: erase(Arc::new(UnsafeCell::new(Collection { v_table, members }))),
+        }
+    }
+}
+
+impl Display for Collection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut dbg = f.debug_struct("Collection");
+        for (ident, member) in self.members.iter() {
+            dbg.field(&ident.name, member);
+        }
+        dbg.finish()
+    }
+}
+
+pub struct Builtin {
+    v_table: VTable,
+    r#fn: Arc<dyn Fn(Vec<Reference>) -> Result<Reference>>,
+}
+
+impl Object for Builtin {
+    fn r#type(&self) -> ObjectType {
+        ObjectType::Builtin
+    }
+
+    fn v_table(&self) -> &VTable {
+        &self.v_table
+    }
+}
+
+impl Builtin {
+    pub fn erased(r#fn: impl Fn(Vec<Reference>) -> Result<Reference> + 'static) -> Reference {
+        let mut v_table = VTable {
+            inner: HashMap::new(),
+        };
+
+        v_table.inner.insert("truthy", Arc::new(move |_| None));
+
+        Reference {
+            inner: erase(Arc::new(UnsafeCell::new(Builtin {
+                v_table,
+                r#fn: Arc::new(r#fn),
+            }))),
+        }
+    }
+
+    pub fn call(&self, args: Vec<Reference>) -> Result<Reference> {
+        (self.r#fn)(args)
+    }
+}
+
+impl Display for Builtin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Builtin")
+    }
+}
+
+impl Debug for Builtin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Builtin")
     }
 }
 

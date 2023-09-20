@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::{
     ast::{Bool, Expression, Ident, LetStatement, Literal, Program, ReturnStatement, Statement},
     error::{Error, Result},
@@ -102,7 +104,6 @@ impl Parser {
     }
 
     fn parse_expression(&mut self, precedence: Precedence) -> Result<Expression> {
-        println!("{:?}", self.cur);
         let mut lhs = match self.cur {
             Token::LParen => self.parse_grouped()?,
             Token::LBrace => self.parse_block()?,
@@ -112,22 +113,22 @@ impl Parser {
             Token::Keyword(Keyword::If) => self.parse_if()?,
             Token::Keyword(Keyword::True | Keyword::False) => self.parse_bool()?,
             Token::Keyword(Keyword::Function) => self.parse_function()?,
+            Token::Keyword(Keyword::Def) => self.parse_definition()?,
             Token::Operator(Operator::Bang | Operator::Minus) => self.parse_prefix()?,
             Token::Semicolon
             | Token::Operator(_)
             | Token::Keyword(_)
             | Token::EOF
-            | Token::Comman
+            | Token::Comma
             | Token::RParen
             | Token::RBrace
             | Token::Illegal => todo!(),
         };
 
-        println!("{:?}", self.peek);
-
         while !matches!(self.peek, Token::Semicolon) && precedence < self.peek_precedence() {
             lhs = match self.peek {
                 Token::Operator(Operator::Assign)
+                | Token::Operator(Operator::Dot)
                 | Token::Operator(Operator::Plus)
                 | Token::Operator(Operator::PlusEqual)
                 | Token::Operator(Operator::Minus)
@@ -139,6 +140,8 @@ impl Parser {
                 | Token::Operator(Operator::Less)
                 | Token::Operator(Operator::LessOrEqual)
                 | Token::Operator(Operator::Greater)
+                | Token::Operator(Operator::Ampersand)
+                | Token::Operator(Operator::Pipe)
                 | Token::Operator(Operator::GreaterOrEqual) => {
                     self.next_token()?;
                     self.parse_infix_operator(lhs)?
@@ -152,7 +155,7 @@ impl Parser {
                 | Token::Operator(_)
                 | Token::Keyword(_)
                 | Token::EOF
-                | Token::Comman
+                | Token::Comma
                 | Token::Ident(_)
                 | Token::Int(_)
                 | Token::RParen
@@ -163,6 +166,54 @@ impl Parser {
         }
 
         return Ok(lhs);
+    }
+
+    fn parse_definition(&mut self) -> Result<Expression> {
+        // def { (<ident> = <expression>,)* }
+        self.expect_peek(
+            |t| matches!(t, Token::LBrace),
+            Error::FunctionError("Expected opening braces after `def`.".into()),
+        )?;
+
+        let mut members = HashMap::new();
+
+        self.expect_peek(
+            |t| matches!(t, Token::Ident(_)),
+            Error::FunctionError("Expected collection to have at least one member.".into()),
+        )?;
+
+        while let Token::Ident(name) = &self.cur {
+            let name = name.clone();
+
+            self.expect_peek(
+                |t| matches!(t, Token::Operator(Operator::Assign)),
+                Error::Collection("Identifier must be followed by assignment operator.".into()),
+            )?;
+            self.next_token()?;
+
+            let member = self.parse_expression(Precedence::Lowest)?;
+            if members
+                .insert(Ident { name: name.clone() }, member)
+                .is_some()
+            {
+                return Err(Error::Collection(format!(
+                    "Cannot define `{name}` more than once as member.",
+                )));
+            }
+
+            if matches!(self.peek, Token::Comma) {
+                self.next_token()?;
+            }
+            self.next_token()?;
+        }
+
+        if !matches!(self.cur, Token::RBrace) {
+            return Err(Error::FunctionError(
+                "Expected closing braces at collection definition".into(),
+            ));
+        }
+
+        Ok(Expression::Literal(Literal::Collection { members }))
     }
 
     fn parse_prefix(&mut self) -> Result<Expression> {
@@ -179,7 +230,7 @@ impl Parser {
         while !matches!(self.peek, Token::RParen) && !matches!(self.cur, Token::EOF) {
             self.next_token()?;
             args.push(self.parse_expression(Precedence::Lowest)?);
-            if matches!(self.peek, Token::Comman) {
+            if matches!(self.peek, Token::Comma) {
                 self.next_token()?;
             }
         }
@@ -206,7 +257,7 @@ impl Parser {
         self.next_token()?;
         while let Token::Ident(name) = &self.cur {
             parameters.push(Ident { name: name.clone() });
-            if matches!(self.peek, Token::Comman) {
+            if matches!(self.peek, Token::Comma) {
                 self.next_token()?;
             }
             self.next_token()?;
@@ -363,11 +414,15 @@ impl Parser {
 
     fn precendence(t: &Token) -> Precedence {
         match t {
+            Token::Operator(Operator::Dot) => Precedence::Access,
             Token::LParen => Precedence::Invoke,
             Token::Operator(Operator::Divide) | Token::Operator(Operator::Multiply) => {
                 Precedence::Product
             }
-            Token::Operator(Operator::Plus) | Token::Operator(Operator::Minus) => Precedence::Sum,
+            Token::Operator(Operator::Plus)
+            | Token::Operator(Operator::Minus)
+            | Token::Operator(Operator::Ampersand)
+            | Token::Operator(Operator::Pipe) => Precedence::Sum,
             Token::Operator(Operator::Assign)
             | Token::Operator(Operator::PlusEqual)
             | Token::Operator(Operator::MinusEqual) => Precedence::Assign,
@@ -385,7 +440,7 @@ impl Parser {
             | Token::Ident(_)
             | Token::Int(_)
             | Token::Str(_)
-            | Token::Comman
+            | Token::Comma
             | Token::LBrace
             | Token::RParen
             | Token::Illegal
@@ -404,6 +459,7 @@ pub enum Precedence {
     Product,     // x * y, x / y
     Prefix,      // !x, -x
     Invoke,      // foo(x, y)
+    Access,      // bar.foo
 }
 
 impl Precedence {
@@ -417,6 +473,7 @@ impl Precedence {
             Self::Product => 5,
             Self::Prefix => 6,
             Self::Invoke => 7,
+            Self::Access => 8,
         }
     }
 }

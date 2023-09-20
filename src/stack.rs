@@ -3,7 +3,7 @@ use std::{
     collections::{HashMap, HashSet},
 };
 
-use crate::object::Reference;
+use crate::{builtin::builtins, object::Reference};
 
 #[derive(Debug)]
 struct Frame {
@@ -21,7 +21,10 @@ impl Stack {
         Self {
             frames: vec![Frame {
                 scope: vec![HashSet::new()],
-                vars: HashMap::new(),
+                vars: builtins()
+                    .into_iter()
+                    .map(|(k, v)| (k, vec![(v, 0)]))
+                    .collect(),
             }],
         }
     }
@@ -29,7 +32,10 @@ impl Stack {
     pub fn push_frame(&mut self) {
         self.frames.push(Frame {
             scope: vec![HashSet::new()],
-            vars: HashMap::new(),
+            vars: builtins()
+                .into_iter()
+                .map(|(k, v)| (k, vec![(v, 0)]))
+                .collect(),
         })
     }
 

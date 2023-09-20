@@ -39,6 +39,11 @@ fn main() {
             }
         };
 
-        println!("{out}");
+        match out.r#type() {
+            monkey::object::ObjectType::Str
+            | monkey::object::ObjectType::Bool
+            | monkey::object::ObjectType::Integer => println!("{out}"),
+            _ => {}
+        }
     }
 }

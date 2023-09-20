@@ -8,7 +8,7 @@ pub enum Token {
     Int(i32),
     Str(String),
     Operator(Operator),
-    Comman,
+    Comma,
     Semicolon,
     LParen,
     RParen,
@@ -37,6 +37,8 @@ pub enum Operator {
     NotEqual,
     And,
     Or,
+    Ampersand,
+    Pipe,
 }
 
 #[allow(dead_code)]
@@ -44,6 +46,7 @@ pub enum Operator {
 pub enum Keyword {
     Let,
     Function,
+    Def,
     If,
     Else,
     True,
@@ -56,6 +59,7 @@ impl Keyword {
         match ident.as_ref() {
             "let" => Ok(Self::Let),
             "fn" => Ok(Self::Function),
+            "def" => Ok(Self::Def),
             "true" => Ok(Self::True),
             "false" => Ok(Self::False),
             "if" => Ok(Self::If),
