@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ops::Index, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     ast::{self, Expression, Ident, LetStatement, Literal, Node, ReturnStatement, Statement},
@@ -425,7 +425,7 @@ impl Eval {
         let ident = match lhs {
             Expression::Ident(Ident { name }) => name,
             Expression::Infix {
-                operator: op @ Token::Operator(Operator::Dot),
+                operator: Token::Operator(Operator::Dot),
                 lhs: collection,
                 rhs: accessor,
                 ..

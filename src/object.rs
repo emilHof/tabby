@@ -47,10 +47,6 @@ pub struct Reference {
 }
 
 impl Reference {
-    fn as_ref(&self) -> &dyn Object {
-        unsafe { &(*self.inner.get()) }
-    }
-
     pub unsafe fn get_mut<T>(&self) -> &mut T {
         &mut (*(self.inner.get() as *mut T))
     }

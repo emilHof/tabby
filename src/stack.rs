@@ -51,10 +51,6 @@ impl Stack {
         &mut self.frames.last_mut().unwrap().scope
     }
 
-    fn vars(&self) -> &HashMap<String, Vec<(Reference, u32)>> {
-        &self.frames[self.frames.len() - 1].vars
-    }
-
     fn vars_mut(&mut self) -> &mut HashMap<String, Vec<(Reference, u32)>> {
         &mut self.frames.last_mut().unwrap().vars
     }

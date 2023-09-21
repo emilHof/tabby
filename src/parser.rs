@@ -346,7 +346,6 @@ impl Parser {
             |t| matches!(t, Token::LBrace),
             Error::IfError("Expected expression block after condition".into()),
         )?;
-        // [1] + a;
 
         let consequence = Box::new(self.parse_block()?);
 
@@ -445,14 +444,6 @@ impl Parser {
         };
 
         Ok(Expression::Literal(Literal::Bool(bool)))
-    }
-
-    fn expect_cur(&mut self, f: impl Fn(&Token) -> bool, e: Error) -> Result<()> {
-        if !f(&self.cur) {
-            return Err(e);
-        }
-
-        Ok(())
     }
 
     fn expect_peek(&mut self, f: impl Fn(&Token) -> bool, e: Error) -> Result<()> {
