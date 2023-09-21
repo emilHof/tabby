@@ -107,6 +107,7 @@ impl Parser {
         let mut lhs = match self.cur {
             Token::LParen => self.parse_grouped()?,
             Token::LBrace => self.parse_block()?,
+            Token::LBracket => self.parse_list()?,
             Token::Ident(_) => self.parse_ident()?,
             Token::Int(_) => self.parse_int()?,
             Token::Str(_) => self.parse_str()?,
@@ -122,6 +123,7 @@ impl Parser {
             | Token::Comma
             | Token::RParen
             | Token::RBrace
+            | Token::RBracket
             | Token::Illegal => todo!(),
         };
 
@@ -142,13 +144,19 @@ impl Parser {
                 | Token::Operator(Operator::Greater)
                 | Token::Operator(Operator::Ampersand)
                 | Token::Operator(Operator::Pipe)
-                | Token::Operator(Operator::GreaterOrEqual) => {
+                | Token::Operator(Operator::GreaterOrEqual)
+                | Token::Operator(Operator::LeftArrow)
+                | Token::Operator(Operator::RightArrow) => {
                     self.next_token()?;
                     self.parse_infix_operator(lhs)?
                 }
                 Token::LParen => {
                     self.next_token()?;
                     self.parse_invoke(lhs)?
+                }
+                Token::LBracket => {
+                    self.next_token()?;
+                    self.parse_index(lhs)?
                 }
                 Token::Semicolon
                 | Token::Str(_)
@@ -161,6 +169,7 @@ impl Parser {
                 | Token::RParen
                 | Token::LBrace
                 | Token::RBrace
+                | Token::RBracket
                 | Token::Illegal => break,
             };
         }
@@ -168,8 +177,26 @@ impl Parser {
         return Ok(lhs);
     }
 
+    fn parse_list(&mut self) -> Result<Expression> {
+        let mut elements = vec![];
+
+        while !matches!(self.peek, Token::RBracket | Token::EOF) {
+            self.next_token()?;
+            elements.push(self.parse_expression(Precedence::Lowest)?);
+            if matches!(self.peek, Token::Comma) {
+                self.next_token()?;
+            }
+        }
+
+        self.expect_peek(
+            |t| matches!(t, Token::RBracket),
+            Error::FunctionError("Expected closing bracket in vector literal declaration.".into()),
+        )?;
+
+        Ok(Expression::Literal(Literal::Vector { elements }))
+    }
+
     fn parse_definition(&mut self) -> Result<Expression> {
-        // def { (<ident> = <expression>,)* }
         self.expect_peek(
             |t| matches!(t, Token::LBrace),
             Error::FunctionError("Expected opening braces after `def`.".into()),
@@ -177,10 +204,7 @@ impl Parser {
 
         let mut members = HashMap::new();
 
-        self.expect_peek(
-            |t| matches!(t, Token::Ident(_)),
-            Error::FunctionError("Expected collection to have at least one member.".into()),
-        )?;
+        self.next_token()?;
 
         while let Token::Ident(name) = &self.cur {
             let name = name.clone();
@@ -216,6 +240,19 @@ impl Parser {
         Ok(Expression::Literal(Literal::Collection { members }))
     }
 
+    fn parse_index(&mut self, lhs: Expression) -> Result<Expression> {
+        self.next_token()?;
+        let index = Box::new(self.parse_expression(Precedence::Lowest)?);
+        let indexee = Box::new(lhs);
+
+        self.expect_peek(
+            |t| matches!(t, Token::RBracket),
+            Error::FunctionError("Expected closing parentheses at function invocation".into()),
+        )?;
+
+        Ok(Expression::Indexed { indexee, index })
+    }
+
     fn parse_prefix(&mut self) -> Result<Expression> {
         let operator = self.cur.clone();
         self.next_token()?;
@@ -247,6 +284,25 @@ impl Parser {
     }
 
     fn parse_function(&mut self) -> Result<Expression> {
+        let mut capture = vec![];
+        if matches!(self.peek, Token::LBracket) {
+            self.next_token()?;
+            while let Token::Ident(name) = &self.peek {
+                capture.push(Ident { name: name.clone() });
+                self.next_token()?;
+                if matches!(self.peek, Token::Comma) {
+                    self.next_token()?;
+                }
+            }
+
+            self.expect_peek(
+                |t| matches!(t, Token::RBracket),
+                Error::FunctionError(
+                    "Expected closing pipe for environment capture declaration.".into(),
+                ),
+            )?;
+        }
+
         self.expect_peek(
             |t| matches!(t, Token::LParen),
             Error::FunctionError("Expected parentheses after `fn` keyword".into()),
@@ -276,7 +332,11 @@ impl Parser {
 
         let body = Box::new(self.parse_block()?);
 
-        Ok(Expression::Literal(Literal::Function { parameters, body }))
+        Ok(Expression::Literal(Literal::Function {
+            parameters,
+            body,
+            capture,
+        }))
     }
 
     fn parse_if(&mut self) -> Result<Expression> {
@@ -286,6 +346,7 @@ impl Parser {
             |t| matches!(t, Token::LBrace),
             Error::IfError("Expected expression block after condition".into()),
         )?;
+        // [1] + a;
 
         let consequence = Box::new(self.parse_block()?);
 
@@ -414,7 +475,7 @@ impl Parser {
 
     fn precendence(t: &Token) -> Precedence {
         match t {
-            Token::Operator(Operator::Dot) => Precedence::Access,
+            Token::Operator(Operator::Dot) | Token::LBracket => Precedence::Access,
             Token::LParen => Precedence::Invoke,
             Token::Operator(Operator::Divide) | Token::Operator(Operator::Multiply) => {
                 Precedence::Product
@@ -443,8 +504,9 @@ impl Parser {
             | Token::Comma
             | Token::LBrace
             | Token::RParen
-            | Token::Illegal
-            | Token::RBrace => Precedence::Lowest,
+            | Token::RBrace
+            | Token::RBracket
+            | Token::Illegal => Precedence::Lowest,
         }
     }
 }

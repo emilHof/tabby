@@ -14,6 +14,8 @@ pub enum Token {
     RParen,
     LBrace,
     RBrace,
+    LBracket,
+    RBracket,
 }
 
 #[allow(dead_code)]
@@ -39,6 +41,8 @@ pub enum Operator {
     Or,
     Ampersand,
     Pipe,
+    RightArrow,
+    LeftArrow,
 }
 
 #[allow(dead_code)]

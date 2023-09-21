@@ -31,19 +31,12 @@ fn main() {
             }
         };
 
-        let out = match runtime.eval(Node::Expression(Expression::Program(pro))) {
-            Ok(obj) => obj,
+        match runtime.eval(Node::Expression(Expression::Program(pro))) {
+            Ok(_) => {}
             Err(e) => {
                 println!("{:?}", e);
                 return;
             }
         };
-
-        match out.r#type() {
-            monkey::object::ObjectType::Str
-            | monkey::object::ObjectType::Bool
-            | monkey::object::ObjectType::Integer => println!("{out}"),
-            _ => {}
-        }
     }
 }

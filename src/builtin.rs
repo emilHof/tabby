@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    eval::ops::Flow,
+    eval::{error::Error, ops::Flow},
     object::{Builtin, Integer, ObjectType, Reference, Str, Unit},
 };
 
@@ -25,15 +25,25 @@ pub fn builtins() -> HashMap<String, Reference> {
                     ));
                 }
 
-                if !matches!(args[0].r#type(), ObjectType::Str) {
+                let int = args[0]
+                    .v_table()
+                    .get("len")
+                    .ok_or(crate::eval::error::Error::Eval(
+                        "Object does not implement len operation.".into(),
+                    ))?(None)
+                .ok_or(crate::eval::error::Error::Eval(
+                    "Object does not implement len operation.".into(),
+                ))?;
+
+                if !matches!(int.r#type(), ObjectType::Integer) {
                     return Err(crate::eval::error::Error::Eval(
-                        "Incorrect number of arguments used for len()".into(),
+                        "Object does not implement len operation.".into(),
                     ));
-                }
+                };
 
-                let str = unsafe { args[0].get_mut::<Str>() };
+                let len = unsafe { int.get_mut::<Integer>().val };
 
-                return Ok(Flow::Continue(Integer::erased(str.str.len() as i32)));
+                return Ok(Flow::Continue(Integer::erased(len)));
             }),
         ),
         (
@@ -41,17 +51,23 @@ pub fn builtins() -> HashMap<String, Reference> {
             Builtin::erased(|args| {
                 if args.len() != 1 {
                     return Err(crate::eval::error::Error::Eval(
-                        "Incorrect number of arguments used for len()".into(),
+                        "Incorrect number of arguments used for print()".into(),
                     ));
                 }
 
-                if !matches!(args[0].r#type(), ObjectType::Str) {
+                let f = args[0].v_table().get("str").ok_or(Error::Eval(
+                    "Object passed to print does not have a string represenetation.".into(),
+                ))?;
+
+                let str = f(None).unwrap_or(Str::erased("".into()));
+
+                if !matches!(str.r#type(), ObjectType::Str) {
                     return Err(crate::eval::error::Error::Eval(
-                        "Incorrect number of arguments used for len()".into(),
+                        "Object did not return valid string representation.".into(),
                     ));
                 }
 
-                let str = unsafe { args[0].get_mut::<Str>() };
+                let str = unsafe { str.get_mut::<Str>() };
 
                 println!("{}", str);
 

@@ -65,6 +65,10 @@ pub enum Expression {
         invoked: Box<Expression>,
         args: Vec<Expression>,
     },
+    Indexed {
+        indexee: Box<Expression>,
+        index: Box<Expression>,
+    },
 }
 
 #[allow(dead_code)]
@@ -82,9 +86,13 @@ pub enum Literal {
     Function {
         parameters: Vec<Ident>,
         body: Box<Expression>,
+        capture: Vec<Ident>,
     },
     Collection {
         members: HashMap<Ident, Expression>,
+    },
+    Vector {
+        elements: Vec<Expression>,
     },
 }
 

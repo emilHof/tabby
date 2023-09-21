@@ -13,6 +13,7 @@ pub enum ObjectType {
     Bool,
     Builtin,
     Collection,
+    Vector,
     Function,
     Integer,
     Str,
@@ -108,6 +109,11 @@ impl Integer {
 
             Some(rhs)
         };
+
+        v_table.inner.insert(
+            "str",
+            Arc::new(move |_| Some(Str::erased(format!("{val}")))),
+        );
 
         v_table.inner.insert(
             "sub_lhs",
@@ -243,6 +249,11 @@ impl Bool {
         };
 
         v_table.inner.insert(
+            "str",
+            Arc::new(move |_| Some(Str::erased(format!("{val}")))),
+        );
+
+        v_table.inner.insert(
             "eq_lhs",
             Arc::new(move |obj| {
                 let rhs = is_bool(obj)?;
@@ -322,7 +333,8 @@ impl Display for Unit {
 pub struct Function {
     v_table: VTable,
     pub parameters: Vec<Ident>,
-    pub body: Box<Expression>,
+    pub body: Expression,
+    pub capture: HashMap<Ident, Reference>,
 }
 
 impl Object for Function {
@@ -336,7 +348,11 @@ impl Object for Function {
 }
 
 impl Function {
-    pub fn erased(parameters: Vec<Ident>, body: Box<Expression>) -> Reference {
+    pub fn erased(
+        parameters: Vec<Ident>,
+        body: Expression,
+        capture: HashMap<Ident, Reference>,
+    ) -> Reference {
         let mut v_table = VTable {
             inner: HashMap::new(),
         };
@@ -348,6 +364,7 @@ impl Function {
                 v_table,
                 parameters,
                 body,
+                capture,
             }))),
         }
     }
@@ -447,6 +464,141 @@ impl Display for Collection {
         let mut dbg = f.debug_struct("Collection");
         for (ident, member) in self.members.iter() {
             dbg.field(&ident.name, member);
+        }
+        dbg.finish()
+    }
+}
+
+#[derive(Debug)]
+pub struct Vector {
+    v_table: VTable,
+    pub elements: Arc<Vec<Reference>>,
+}
+
+impl Object for Vector {
+    fn r#type(&self) -> ObjectType {
+        ObjectType::Vector
+    }
+
+    fn v_table(&self) -> &VTable {
+        &self.v_table
+    }
+}
+
+impl Vector {
+    pub fn erased(elements: Vec<Reference>) -> Reference {
+        let elements = Arc::new(elements);
+        let mut v_table = VTable {
+            inner: HashMap::new(),
+        };
+
+        let is_vec = |obj: Option<Reference>| {
+            let Some(obj) = obj else {
+                return None;
+            };
+
+            if !matches!(obj.r#type(), ObjectType::Vector) {
+                return None;
+            }
+
+            let rhs = unsafe { obj.get_mut::<Vector>().elements.clone() };
+
+            Some(rhs)
+        };
+
+        v_table.inner.insert("truthy", Arc::new(move |_| None));
+        {
+            let elements = elements.clone();
+            v_table.inner.insert(
+                "add_lhs",
+                Arc::new(move |obj| {
+                    let rhs = is_vec(obj)?;
+
+                    let new = elements
+                        .iter()
+                        .cloned()
+                        .chain(rhs.iter().cloned())
+                        .collect();
+
+                    Some(Vector::erased(new))
+                }),
+            );
+        }
+        {
+            let elements = elements.clone();
+            v_table.inner.insert(
+                "len",
+                Arc::new(move |_| Some(Integer::erased(elements.len() as i32))),
+            );
+        }
+        {
+            let elements = elements.clone();
+            v_table.inner.insert(
+                "str",
+                Arc::new(move |_| {
+                    let elements = elements
+                        .iter()
+                        .try_fold(String::new(), |acc, element| {
+                            element
+                                .v_table()
+                                .get("str")
+                                .ok_or(())
+                                .and_then(|f| f(None).ok_or(()))
+                                .and_then(|obj| {
+                                    if matches!(obj.r#type(), ObjectType::Str) {
+                                        Ok(format!("{acc}{}, ", unsafe {
+                                            obj.get_mut::<Str>().str.as_ref()
+                                        }))
+                                    } else {
+                                        Err(())
+                                    }
+                                })
+                        })
+                        .ok()?;
+
+                    Some(Str::erased(format!(
+                        "[{}]",
+                        &elements[..elements.len().saturating_sub(2)]
+                    )))
+                }),
+            );
+        }
+        {
+            let elements = elements.clone();
+            v_table.inner.insert(
+                "idx",
+                Arc::new(move |obj| {
+                    let Some(obj) = obj else {
+                        return None;
+                    };
+
+                    if !matches!(obj.r#type(), ObjectType::Integer) {
+                        return None;
+                    }
+
+                    let rhs = unsafe { obj.get_mut::<Integer>().val };
+
+                    Some(
+                        elements
+                            .get(rhs as usize)
+                            .cloned()
+                            .unwrap_or(Unit::erased()),
+                    )
+                }),
+            );
+        }
+
+        Reference {
+            inner: erase(Arc::new(UnsafeCell::new(Vector { v_table, elements }))),
+        }
+    }
+}
+
+impl Display for Vector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut dbg = f.debug_list();
+        for element in self.elements.iter() {
+            dbg.entry(element);
         }
         dbg.finish()
     }
@@ -552,6 +704,19 @@ impl Str {
                     let rhs = is_str(rhs)?;
                     Some(Str::erased(format!("{}{}", str, rhs)))
                 }),
+            );
+        }
+        {
+            let str = str.clone();
+            v_table
+                .inner
+                .insert("str", Arc::new(move |_| Some(Str::erased(str.to_string()))));
+        }
+        {
+            let str = str.clone();
+            v_table.inner.insert(
+                "len",
+                Arc::new(move |_| Some(Integer::erased(str.len() as i32))),
             );
         }
 

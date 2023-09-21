@@ -39,6 +39,8 @@ impl Lexer {
             '|' => Token::Operator(Operator::Pipe),
             '{' => Token::LBrace,
             '}' => Token::RBrace,
+            '[' => Token::LBracket,
+            ']' => Token::RBracket,
             '(' => Token::LParen,
             ')' => Token::RParen,
             ';' => Token::Semicolon,
@@ -70,6 +72,8 @@ impl Lexer {
                 '-' => Token::Operator(Operator::MinusEqual),
                 _ => return self.read_single_token(),
             },
+            '>' if self.c == '-' => Token::Operator(Operator::RightArrow),
+            '-' if self.c == '<' => Token::Operator(Operator::LeftArrow),
             '&' if self.c == '&' => Token::Operator(Operator::And),
             '|' if self.c == '|' => Token::Operator(Operator::Or),
             _ => return self.read_single_token(),
@@ -85,7 +89,9 @@ impl Lexer {
 
         let token = match self.c {
             '=' | '!' | '-' | '+' | '&' | '|' | '<' | '>' => self.read_double_token(),
-            '/' | '*' | '.' | '?' | '{' | '}' | '(' | ')' | ';' | ',' => self.read_single_token(),
+            '/' | '*' | '.' | '?' | '{' | '}' | '(' | ')' | '[' | ']' | ';' | ',' => {
+                self.read_single_token()
+            }
             '"' => return Ok(Token::Str(self.read_string())),
             '\0' => Token::EOF,
             // Parse idents and keywords.

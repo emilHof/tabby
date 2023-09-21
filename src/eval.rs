@@ -1,8 +1,10 @@
-use std::{collections::HashMap, mem};
+use std::{collections::HashMap, ops::Index, sync::Arc};
 
 use crate::{
     ast::{self, Expression, Ident, LetStatement, Literal, Node, ReturnStatement, Statement},
-    object::{self, Builtin, Collection, Function, Integer, ObjectType, Reference, Str, Unit},
+    object::{
+        self, Builtin, Collection, Function, Integer, ObjectType, Reference, Str, Unit, Vector,
+    },
     stack::Stack,
     token::{Operator, Token},
 };
@@ -159,25 +161,77 @@ impl Eval {
             Node::Expression(Expression::Invoked { invoked, args }) => {
                 self.eval_invoke(*invoked, args)?
             }
-            Node::Expression(Expression::Literal(Literal::Function { parameters, body })) => {
-                Flow::Continue(Function::erased(parameters, body))
-            }
+            Node::Expression(Expression::Literal(Literal::Function {
+                parameters,
+                body,
+                capture,
+            })) => self.eval_function(parameters, *body, capture)?,
             Node::Expression(Expression::Literal(Literal::Collection { members })) => {
                 Flow::Continue(Collection::erased(members.into_iter().try_fold(
                     HashMap::new(),
-                    |mut members, (ident, exp)| match self.eval(Node::Expression(exp)) {
-                        Ok(member) => {
+                    |mut members, (ident, exp)| {
+                        self.eval(Node::Expression(exp)).map(|member| {
                             members.insert(ident, member.clone());
-                            Ok(members)
-                        }
-                        Err(e) => Err(e),
+                            members
+                        })
                     },
                 )?))
+            }
+            Node::Expression(Expression::Literal(Literal::Vector { elements })) => Flow::Continue(
+                Vector::erased(elements.into_iter().try_fold(vec![], |mut elements, exp| {
+                    self.eval(Node::Expression(exp)).map(|reference| {
+                        elements.push(reference.unwrap());
+                        elements
+                    })
+                })?),
+            ),
+            Node::Expression(Expression::Indexed { indexee, index }) => {
+                self.eval_index(*indexee, *index)?
             }
             _ => todo!(),
         };
 
         Ok(ret)
+    }
+    fn eval_function(
+        &mut self,
+        parameters: Vec<Ident>,
+        body: Expression,
+        capture: Vec<Ident>,
+    ) -> Result<Reference> {
+        let capture = capture
+            .into_iter()
+            .try_fold(HashMap::new(), |mut map, ident| {
+                match self.stack.get(&ident.name) {
+                    Some(value) => {
+                        map.insert(ident, value.clone());
+                        Ok(map)
+                    }
+                    None => Err(Error::Eval(format!(
+                        "Attempting to capture unknown variable {} in function decleration.",
+                        ident.name
+                    ))),
+                }
+            })?;
+
+        Ok(Flow::Continue(Function::erased(parameters, body, capture)))
+    }
+
+    fn eval_index(&mut self, indexee: Expression, index: Expression) -> Result<Reference> {
+        let index = self.eval(Node::Expression(index))?.unwrap();
+        let indexee = self.eval(Node::Expression(indexee))?.unwrap();
+
+        let obj = indexee
+            .v_table()
+            .get("idx")
+            .ok_or(Error::Eval("Object does not support indexing".into()))?(Some(
+            index,
+        ))
+        .ok_or(Error::Eval(
+            "Indexing not supported with this object.".into(),
+        ))?;
+
+        Ok(Flow::Continue(obj))
     }
 
     fn eval_invoke(&mut self, invoked: Expression, args: Vec<Expression>) -> Result<Reference> {
@@ -219,7 +273,11 @@ impl Eval {
             self.stack.add(ident.name.clone(), arg);
         }
 
-        let ret = self.eval(Node::Expression(*function.body.clone()));
+        for (ident, captured) in &function.capture {
+            self.stack.add(ident.name.clone(), captured.clone());
+        }
+
+        let ret = self.eval(Node::Expression(function.body.clone()));
 
         self.stack.pop_frame();
 
@@ -270,7 +328,7 @@ impl Eval {
 
     fn eval_access(
         &mut self,
-        operator: Token,
+        _operator: Token,
         lhs: Expression,
         rhs: Expression,
     ) -> Result<Reference> {
@@ -321,6 +379,43 @@ impl Eval {
             )))
     }
 
+    fn eval_access_assign(
+        &mut self,
+        _operator: Token,
+        collection: Expression,
+        accessor: Expression,
+        rhs: Expression,
+    ) -> Result<Reference> {
+        let collection = self.eval(Node::Expression(collection))?.unwrap();
+        let ident = match accessor {
+            Expression::Ident(i) => i,
+            _ => {
+                return Err(Error::Eval(
+                    "Collection can only be accessed via an ident.".into(),
+                ))
+            }
+        };
+
+        if !matches!(collection.r#type(), ObjectType::Collection) {
+            return Err(Error::Eval("Only collections can be accessed.".into()));
+        }
+
+        let rhs = self.eval(Node::Expression(rhs))?;
+        if rhs.is_break() {
+            return Ok(Flow::Break(rhs.unwrap()));
+        };
+
+        let collection = unsafe { collection.get_mut::<Collection>() };
+
+        let mut map = (*collection.members).clone();
+
+        map.insert(ident, rhs.clone());
+
+        collection.members = Arc::new(map);
+
+        Ok(rhs)
+    }
+
     fn eval_assign(
         &mut self,
         operator: Token,
@@ -329,6 +424,12 @@ impl Eval {
     ) -> Result<Reference> {
         let ident = match lhs {
             Expression::Ident(Ident { name }) => name,
+            Expression::Infix {
+                operator: op @ Token::Operator(Operator::Dot),
+                lhs: collection,
+                rhs: accessor,
+                ..
+            } => return self.eval_access_assign(operator, *collection, *accessor, rhs),
             _ => {
                 let lhs = self.eval(Node::Expression(lhs))?;
                 return Err(Error::Eval(format!(
